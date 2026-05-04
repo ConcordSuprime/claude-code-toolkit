@@ -6,7 +6,7 @@ First, run this shell command to fetch MR data:
 ```
 
 Read the output and perform a thorough code review using the instructions below.
-If the output contains a `CLAUDE.md (project architecture)` section — use it as the primary architecture reference for this project. Otherwise use the default architecture rules below.
+Use the Go architecture rules from your global CLAUDE.md as the reference standard for all projects.
 
 ---
 
