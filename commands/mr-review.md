@@ -70,6 +70,57 @@ Violations to flag:
 - Important operations should have log entries
 - Errors should be reported to Sentry where appropriate
 
+### 7. N+1 Queries — Batch Inserts
+
+Look for DB writes inside loops:
+```go
+// WRONG — N roundtrips
+for _, id := range ids {
+    db.Create(&Row{ID: id})
+}
+// CORRECT — 1 roundtrip
+db.Create(&rows)
+```
+Flag any `for` loop in repository layer that contains a DB write.
+
+### 8. Do Not Recreate Existing Infrastructure
+
+Before flagging, check if the solution already exists:
+- Custom error types → `gokittypes.NewBadRequest()` / `gokittypes.NewNotFound()`
+- Unique deduplication → `sliceutil.Unique()`
+- New file in `pkg/` that wraps a single value or reimplements something from `go-kit`
+
+Flag: new utilities that duplicate what `go-kit` already provides.
+
+### 9. App Wiring Order (app.go)
+
+New modules must be initialized in the correct group:
+```
+repos → services → usecases → handlers
+```
+Flag: service/handler init placed outside its domain group, or at the bottom of `initModules` away from its peers.
+
+### 10. Naming Clarity
+
+- Short ambiguous names: `scoped`, `result`, `data`, `resp` — flag if the name could describe 3+ different things
+- Struct named like a DTO but used as a service input/output — flag and suggest a clearer name
+- Variable `scoped` → should be `directoryScopedClient` or similar
+
+### 11. Unnecessary Defensive Validation
+
+Flag checks that duplicate guarantees already provided by the layer above:
+- Duplicate detection in service when the DB has a unique constraint
+- Nil checks on values that the validator already confirmed are non-nil
+- Re-validating fields the handler already validated
+
+### 12. AI-Generated Code Smell
+
+Flag code that shows signs of AI generation without project-specific adaptation:
+- Helpers/structs used exactly once with no reuse value
+- Abstractions more complex than the problem requires
+- Patterns inconsistent with how the same problem is solved elsewhere in the codebase
+- Methods that could be replaced by an existing `GetByID` or similar already in the interface
+
 ---
 
 ## Output Format
@@ -86,18 +137,25 @@ One paragraph overall impression.
 
 ## Architecture Violations 🏗️
 Cases where layer boundaries or project conventions are broken.
+Include: wrong layer placement, DB access outside repository, handler calling repo directly,
+wiring order violations in app.go, module structure deviating from the project standard.
 
 ## Critical Issues 🔴
 Bugs, data loss risks, panics, silent errors — must fix before merge.
 
 ## Warnings 🟡
 Issues that should be fixed but are not blockers.
+Include: N+1 queries, missing batch inserts, non-transactional paired writes,
+not-found errors returning 500, missing nil guards on optional clients.
 
 ## Suggestions 💡
 Nice-to-have improvements and refactoring ideas.
+Include: unclear naming, unnecessary defensive checks, AI-code that could be simplified,
+new utilities that duplicate existing go-kit functionality.
 
 ## Library Recommendations 📦
 Specific places where existing project dependencies can be used instead of custom code.
+Always check go-kit (gokittypes, sliceutil, requestvalidator) before flagging missing functionality.
 
 ## Positive Notes ✅
 What was done well.
