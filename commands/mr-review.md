@@ -2,7 +2,7 @@ Perform a Go code review for the GitLab MR at: $ARGUMENTS
 
 First, run this shell command to fetch MR data:
 ```
-~/.claude/scripts/gitlab-mr-fetch.sh "$ARGUMENTS"
+~/.claude/scripts/gitlab-review "$ARGUMENTS"
 ```
 
 Read the output and perform a thorough code review using the instructions below.

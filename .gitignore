@@ -1,0 +1,5 @@
+# Go binaries
+tools/*/go.sum
+tools/*/*
+!tools/*/main.go
+!tools/*/go.mod
