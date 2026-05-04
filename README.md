@@ -56,6 +56,23 @@ Create a Personal Access Token:
 
 Required scopes: `read_api`, `read_repository`
 
+### Where to add the token
+
+Claude Code needs the token available as an environment variable when it runs shell commands. Add it to `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "GITLAB_HOST": "https://your-gitlab.company.com",
+    "GITLAB_TOKEN": "glpat-xxxxxxxxxxxxxxxxxxxx"
+  }
+}
+```
+
+This is the recommended way — the variables will always be available to Claude Code regardless of how it was launched.
+
+Alternatively, `setup.sh` will add them to `~/.zshrc`, but then you must launch Claude Code from a terminal that has sourced that file.
+
 ## Adding a New Tool
 
 1. Create `tools/<tool-name>/` with `main.go` and `go.mod`
