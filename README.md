@@ -5,7 +5,7 @@ Shared Claude Code commands and scripts for the team.
 ## Setup
 
 ```bash
-git clone https://github.com/YOUR_ORG/claude-code-toolkit.git
+git clone git@github.com:ConcordSuprime/claude-code-toolkit.git
 cd claude-code-toolkit
 bash setup.sh
 ```
