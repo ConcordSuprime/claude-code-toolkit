@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -50,6 +52,34 @@ func (c *client) get(path string, out any) error {
 		return fmt.Errorf("API %s: %d %s", path, resp.StatusCode, body)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *client) post(path string, body any, out any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, c.host+"/api/v4/"+path, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API POST %s: %d %s", path, resp.StatusCode, body)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
 }
 
 func (c *client) getRaw(path string) string {
@@ -106,6 +136,11 @@ type mrInfo struct {
 	Author       struct {
 		Name string `json:"name"`
 	} `json:"author"`
+	DiffRefs struct {
+		BaseSha  string `json:"base_sha"`
+		HeadSha  string `json:"head_sha"`
+		StartSha string `json:"start_sha"`
+	} `json:"diff_refs"`
 }
 
 type mrChanges struct {
@@ -136,6 +171,20 @@ func (d diffEntry) path() string {
 	return d.OldPath
 }
 
+// --- Finding (for post subcommand) ---
+
+type finding struct {
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	LineType string `json:"line_type"` // "new" or "old"
+	Severity string `json:"severity"`  // "critical", "warning", "suggestion"
+	Body     string `json:"body"`
+}
+
+type findingsInput struct {
+	Findings []finding `json:"findings"`
+}
+
 // --- Formatting ---
 
 func printDiffs(diffs []diffEntry) {
@@ -161,7 +210,6 @@ func printGoMod(gomod string) {
 	fmt.Println("```")
 	fmt.Println()
 }
-
 
 // --- MR mode ---
 
@@ -219,7 +267,6 @@ func reviewCommit(c *client, p *parsedURL, rawURL string) error {
 		return fmt.Errorf("fetch diff: %w", err)
 	}
 
-	// Get target branch from MR for go.mod
 	targetBranch := "main"
 	if p.mrIID != "" {
 		var mr mrInfo
@@ -251,11 +298,122 @@ func reviewCommit(c *client, p *parsedURL, rawURL string) error {
 	return nil
 }
 
+// --- Post mode ---
+
+func severityEmoji(s string) string {
+	switch s {
+	case "critical":
+		return "🔴"
+	case "warning":
+		return "🟡"
+	case "suggestion":
+		return "💡"
+	default:
+		return "💬"
+	}
+}
+
+func postFindings(c *client, p *parsedURL) error {
+	enc := url.PathEscape(p.projectPath)
+	api := fmt.Sprintf("projects/%s", enc)
+
+	var mr mrInfo
+	if err := c.get(api+"/merge_requests/"+p.mrIID, &mr); err != nil {
+		return fmt.Errorf("fetch MR: %w", err)
+	}
+
+	if mr.DiffRefs.BaseSha == "" {
+		return fmt.Errorf("MR has no diff_refs (may not be mergeable yet)")
+	}
+
+	var input findingsInput
+	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
+		return fmt.Errorf("decode findings from stdin: %w", err)
+	}
+
+	posted, failed := 0, 0
+	for _, f := range input.Findings {
+		lineType := f.LineType
+		if lineType == "" {
+			lineType = "new"
+		}
+
+		body := fmt.Sprintf(
+			"> 🤖 **Claude Code Review** %s %s\n\n%s",
+			severityEmoji(f.Severity),
+			strings.ToUpper(f.Severity),
+			f.Body,
+		)
+
+		position := map[string]any{
+			"base_sha":      mr.DiffRefs.BaseSha,
+			"start_sha":     mr.DiffRefs.StartSha,
+			"head_sha":      mr.DiffRefs.HeadSha,
+			"position_type": "text",
+			"new_path":      f.File,
+		}
+		if lineType == "new" {
+			position["new_line"] = f.Line
+		} else {
+			position["old_path"] = f.File
+			position["old_line"] = f.Line
+		}
+
+		payload := map[string]any{
+			"body":     body,
+			"position": position,
+		}
+
+		if err := c.post(api+"/merge_requests/"+p.mrIID+"/discussions", payload, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "  [fail] %s:%d — %v\n", f.File, f.Line, err)
+			failed++
+			continue
+		}
+		fmt.Printf("  [ok]   %s:%d (%s)\n", f.File, f.Line, f.Severity)
+		posted++
+	}
+
+	fmt.Printf("\nPosted: %d, Failed: %d\n", posted, failed)
+	return nil
+}
+
+// --- List merged MRs ---
+
+func listMerged(c *client, projectPath string, targetBranch string, limit int) error {
+	enc := url.PathEscape(projectPath)
+	api := fmt.Sprintf("projects/%s", enc)
+
+	path := fmt.Sprintf("%s/merge_requests?state=merged&target_branch=%s&per_page=%d&order_by=merged_at&sort=desc",
+		api, url.QueryEscape(targetBranch), limit)
+
+	var mrs []struct {
+		IID   int    `json:"iid"`
+		Title string `json:"title"`
+		WebURL string `json:"web_url"`
+		Author struct {
+			Name string `json:"name"`
+		} `json:"author"`
+		MergedAt string `json:"merged_at"`
+	}
+
+	if err := c.get(path, &mrs); err != nil {
+		return fmt.Errorf("fetch MRs: %w", err)
+	}
+
+	for _, mr := range mrs {
+		fmt.Printf("%d\t%s\t%s\t%s\n", mr.IID, mr.MergedAt[:10], mr.Author.Name, mr.WebURL)
+	}
+	return nil
+}
+
 // --- Entry point ---
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "Usage: gitlab-review <MR_URL or commit URL>")
+		fmt.Fprintln(os.Stderr, "Usage:")
+		fmt.Fprintln(os.Stderr, "  gitlab-review <MR_URL>                        — fetch MR context for review")
+		fmt.Fprintln(os.Stderr, "  gitlab-review post <MR_URL>                   — post findings from stdin as inline comments")
+		fmt.Fprintln(os.Stderr, "  gitlab-review list <project_path> [branch] [N] — list last N merged MRs")
 		os.Exit(1)
 	}
 
@@ -265,21 +423,57 @@ func main() {
 		os.Exit(1)
 	}
 
-	rawURL := os.Args[1]
-	p, err := parseURL(rawURL)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
-	}
+	switch os.Args[1] {
+	case "post":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: gitlab-review post <MR_URL>")
+			os.Exit(1)
+		}
+		p, err := parseURL(os.Args[2])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		if err := postFindings(c, p); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
 
-	if p.commitSHA != "" {
-		err = reviewCommit(c, p, rawURL)
-	} else {
-		err = reviewMR(c, p, rawURL)
-	}
+	case "list":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: gitlab-review list <project_path> [branch] [N]")
+			os.Exit(1)
+		}
+		branch := "master"
+		limit := 10
+		if len(os.Args) >= 4 {
+			branch = os.Args[3]
+		}
+		if len(os.Args) >= 5 {
+			if n, err := strconv.Atoi(os.Args[4]); err == nil {
+				limit = n
+			}
+		}
+		if err := listMerged(c, os.Args[2], branch, limit); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
 
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
+	default:
+		rawURL := os.Args[1]
+		p, err := parseURL(rawURL)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		if p.commitSHA != "" {
+			err = reviewCommit(c, p, rawURL)
+		} else {
+			err = reviewMR(c, p, rawURL)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
 	}
 }
