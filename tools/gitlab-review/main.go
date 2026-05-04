@@ -162,6 +162,15 @@ func printGoMod(gomod string) {
 	fmt.Println()
 }
 
+func printClaudeMD(content string) {
+	if content == "(not found)" {
+		return
+	}
+	fmt.Println("## CLAUDE.md (project architecture)")
+	fmt.Println(strings.TrimSpace(content))
+	fmt.Println()
+}
+
 // --- MR mode ---
 
 func reviewMR(c *client, p *parsedURL, rawURL string) error {
@@ -178,7 +187,9 @@ func reviewMR(c *client, p *parsedURL, rawURL string) error {
 		return fmt.Errorf("fetch changes: %w", err)
 	}
 
-	gomod := c.getRaw(api + "/repository/files/go.mod/raw?ref=" + url.QueryEscape(mr.TargetBranch))
+	ref := url.QueryEscape(mr.TargetBranch)
+	gomod := c.getRaw(api + "/repository/files/go.mod/raw?ref=" + ref)
+	claudeMD := c.getRaw(api + "/repository/files/CLAUDE.md/raw?ref=" + ref)
 
 	desc := strings.TrimSpace(mr.Description)
 	if desc == "" {
@@ -195,6 +206,7 @@ func reviewMR(c *client, p *parsedURL, rawURL string) error {
 	fmt.Printf("- **URL:** %s\n\n", rawURL)
 	fmt.Printf("## Description\n%s\n\n", desc)
 	printGoMod(gomod)
+	printClaudeMD(claudeMD)
 	fmt.Println("## Code Changes")
 	printDiffs(changes.Changes)
 
@@ -225,7 +237,9 @@ func reviewCommit(c *client, p *parsedURL, rawURL string) error {
 			targetBranch = mr.TargetBranch
 		}
 	}
-	gomod := c.getRaw(api + "/repository/files/go.mod/raw?ref=" + url.QueryEscape(targetBranch))
+	ref := url.QueryEscape(targetBranch)
+	gomod := c.getRaw(api + "/repository/files/go.mod/raw?ref=" + ref)
+	claudeMD := c.getRaw(api + "/repository/files/CLAUDE.md/raw?ref=" + ref)
 
 	sha := p.commitSHA
 	if len(sha) > 12 {
@@ -242,6 +256,7 @@ func reviewCommit(c *client, p *parsedURL, rawURL string) error {
 	fmt.Printf("- **Changes:** +%d / -%d in %d files\n", commit.Stats.Additions, commit.Stats.Deletions, len(diffs))
 	fmt.Printf("- **URL:** %s\n\n", rawURL)
 	printGoMod(gomod)
+	printClaudeMD(claudeMD)
 	fmt.Println("## Code Changes")
 	printDiffs(diffs)
 
